@@ -355,61 +355,68 @@ class GeminiProvider:
                 thinking = {**thinking, "include_thoughts": True}
             config["thinking_config"] = thinking
         shown = 0  # how much of collected_text has been sent to the chat
-        response = client.models.generate_content_stream(
-            model=self._model,
-            contents=self._to_gemini_contents(messages),
-            config=config,
-        )
-        for chunk in response:
-            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
-                cancelled = True
-                break
-            usage_metadata = getattr(chunk, "usage_metadata", None)
-            if usage_metadata is not None:
-                usage = parse_gemini_usage(usage_metadata)
-            if not chunk.candidates:
-                continue
-            candidate = chunk.candidates[0]
-            reason = getattr(candidate, "finish_reason", None)
-            if reason:
-                finish_reason = getattr(reason, "name", None) or str(reason)
-            # A candidate stopped by a safety filter or the token cap carries no content.
-            content = getattr(candidate, "content", None)
-            for part in getattr(content, "parts", None) or []:
-                raw_response_parts.append(part)
-                fc = getattr(part, "function_call", None)
-                if fc and fc.name:
-                    native_function_call = True
-                    name = canonical_gemini_tool_name(fc.name)
-                    args = dict(fc.args) if fc.args else {}
-                    tool_calls.append(
-                        ToolCallRequest(
-                            id=f"gemini_{name}_{len(tool_calls)}",
-                            name=name,
-                            arguments=args,
-                        )
-                    )
-                if getattr(part, "thought", False):
-                    if part.text:
-                        thought_text += part.text
-                        yield StreamEvent(kind=StreamEventKind.THINKING, text=part.text)
+        from google.genai import errors as genai_errors
+
+        try:
+            response = client.models.generate_content_stream(
+                model=self._model,
+                contents=self._to_gemini_contents(messages),
+                config=config,
+            )
+            for chunk in response:
+                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                    cancelled = True
+                    break
+                usage_metadata = getattr(chunk, "usage_metadata", None)
+                if usage_metadata is not None:
+                    usage = parse_gemini_usage(usage_metadata)
+                if not chunk.candidates:
                     continue
-                if part.text:
-                    collected_text += part.text
-                    # Live: the reply used to arrive in one piece when the model finished,
-                    # so a long answer looked like a chat that never answered.
-                    end = streamable_end(collected_text, shown)
-                    if end > shown:
-                        yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=collected_text[shown:end])
-                        shown = end
+                candidate = chunk.candidates[0]
+                reason = getattr(candidate, "finish_reason", None)
+                if reason:
+                    finish_reason = getattr(reason, "name", None) or str(reason)
+                # A candidate stopped by a safety filter or the token cap carries no content.
+                content = getattr(candidate, "content", None)
+                for part in getattr(content, "parts", None) or []:
+                    raw_response_parts.append(part)
+                    fc = getattr(part, "function_call", None)
+                    if fc and fc.name:
+                        native_function_call = True
+                        name = canonical_gemini_tool_name(fc.name)
+                        args = dict(fc.args) if fc.args else {}
+                        tool_calls.append(ToolCallRequest(id="", name=name, arguments=args))
+                    if getattr(part, "thought", False):
+                        if part.text:
+                            thought_text += part.text
+                            yield StreamEvent(kind=StreamEventKind.THINKING, text=part.text)
+                        continue
+                    if part.text:
+                        collected_text += part.text
+                        # Live: the reply used to arrive in one piece when the model finished,
+                        # so a long answer looked like a chat that never answered.
+                        end = streamable_end(collected_text, shown)
+                        if end > shown:
+                            yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=collected_text[shown:end])
+                            shown = end
+        except genai_errors.APIError as e:
+            # A raw SDK dump (JSON, headers) read as a crash; say what Google answered.
+            msg = f"Google said: {e.code} {e.status or ''} {e.message or ''}".replace("  ", " ").strip()
+            yield StreamEvent(kind=StreamEventKind.ERROR, error=msg[:300])
+            return
         if cancelled:
             return
         _, held_back = extract_leaked_tool_calls(collected_text[shown:])
         leaked, collected_text = extract_leaked_tool_calls(collected_text)
-        _merge_tool_calls(tool_calls, leaked)
-        if not tool_calls:
-            thought_leaked, _ = extract_leaked_tool_calls(thought_text)
-            _merge_tool_calls(tool_calls, thought_leaked)
+        # Text-written calls count only when the model made no real call: merged beside native
+        # ones, Gemini got more function responses than calls and refused the next step (400).
+        if not native_function_call:
+            _merge_tool_calls(tool_calls, leaked)
+            if not tool_calls:
+                thought_leaked, _ = extract_leaked_tool_calls(thought_text)
+                _merge_tool_calls(tool_calls, thought_leaked)
+        for i, call in enumerate(tool_calls):
+            call.id = f"gemini_{call.name}_{i}"
         if held_back:
             yield StreamEvent(kind=StreamEventKind.TEXT_DELTA, text=held_back)
         # Store the raw model Content (with thought_signatures) so the next
@@ -418,7 +425,6 @@ class GeminiProvider:
             self._store_function_call_content(
                 raw_response_parts, tool_calls, native=native_function_call
             )
-        if tool_calls:
             yield StreamEvent(kind=StreamEventKind.TOOL_CALLS, tool_calls=tool_calls, usage=usage)
             stop_reason = "tool_calls"
         elif finish_reason and finish_reason.upper() != "STOP":

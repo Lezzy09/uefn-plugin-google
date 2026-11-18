@@ -319,6 +319,43 @@ def test_native_function_call_strips_mcp_prefix() -> None:
     assert call.arguments == {"code": "print(1)"}
 
 
+def test_text_leaked_call_beside_a_native_one_is_not_a_second_call() -> None:
+    """Merged beside native calls, Gemini got 2 responses for 1 call and answered 400."""
+    fc = SimpleNamespace(name="x", args={"a": 1})
+    chunks = [_chunk(parts=[SimpleNamespace(text=None, function_call=fc),
+                            SimpleNamespace(text="[Tool call: x({})]", function_call=None)], finish_reason="STOP")]
+
+    events = _run_turn(_provider(), chunks)
+
+    calls = next(e for e in events if e.kind is StreamEventKind.TOOL_CALLS).tool_calls
+    assert [(c.name, c.id) for c in calls] == [("x", "gemini_x_0")]
+
+
+def test_two_native_calls_get_unique_ids() -> None:
+    parts = [SimpleNamespace(text=None, function_call=SimpleNamespace(name="x", args={"n": n})) for n in (1, 2)]
+    events = _run_turn(_provider(), [_chunk(parts=parts, finish_reason="STOP")])
+
+    ids = [c.id for c in next(e for e in events if e.kind is StreamEventKind.TOOL_CALLS).tool_calls]
+    assert ids == ["gemini_x_0", "gemini_x_1"]
+
+
+def test_google_api_error_reads_plainly() -> None:
+    from google.genai import errors
+
+    def boom(**kw: Any) -> Any:
+        raise errors.APIError(429, {"error": {"code": 429, "message": "Quota exceeded", "status": "RESOURCE_EXHAUSTED"}})
+
+    provider = _provider()
+    provider._client = lambda: SimpleNamespace(models=SimpleNamespace(generate_content_stream=boom))  # type: ignore[method-assign]
+
+    async def go() -> list[Any]:
+        return [e async for e in provider.stream_turn(system="s", messages=[ProviderMessage(role="user", content="x")], tools=[])]
+
+    events = asyncio.run(go())
+    assert [e.kind for e in events] == [StreamEventKind.ERROR]
+    assert events[0].error.startswith("Google said: 429") and "Quota exceeded" in events[0].error
+
+
 def test_thought_text_is_not_shown_as_the_reply() -> None:
     thought = SimpleNamespace(text="hmm", function_call=None, thought=True)
     visible = SimpleNamespace(text="ok", function_call=None)

@@ -38,6 +38,7 @@ class StreamEventKind(enum.Enum):
     THINKING = "thinking"
     TOOL_CALLS = "tool_calls"
     DONE = "done"
+    ERROR = "error"
 
 
 @dataclass
@@ -47,6 +48,7 @@ class StreamEvent:
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
     stop_reason: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    error: str = ""
 
 
 @dataclass
