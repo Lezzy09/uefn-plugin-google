@@ -99,6 +99,16 @@ def read_access(dot: Path) -> dict[str, Any] | None:
     return got if isinstance(got, dict) else None
 
 
+REFUSED = "Google doesn't allow personal accounts here"
+
+
+def sign_in_refused(dot: Path) -> str:
+    """Why Google sign-in can't work for this account ('' = it can, or nobody asked yet).
+    Setup then offers only the free key; logging out clears it with the verdict."""
+    access = read_access(dot)
+    return REFUSED if access is not None and access.get("ok") is False else ""
+
+
 def clear_access(dot: Path) -> None:
     try:
         (dot / ACCESS_FILE).unlink()

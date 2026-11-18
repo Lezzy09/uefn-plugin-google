@@ -107,14 +107,13 @@ def account_status(config_dir: str | None) -> dict[str, Any]:
         install = install_state()
         status.update(install if install.get("installing") else login_state(folder) or install)
         return status
-    from .gemini_auth import read_access
+    from .gemini_auth import NO_ACCESS, sign_in_refused
 
-    access = read_access(folder)
-    if access is not None and access.get("ok") is False:
+    reason = sign_in_refused(folder)
+    if reason:
         # Signed in, but Google refuses this account (personal accounts, June 2026):
-        # the row says so instead of a green Default.
-        status["access"] = "none"
-        status["error"] = str(access.get("reason") or "No Gemini access for this account.")
+        # the row says so instead of a green Default, and sign-in is no way forward.
+        status.update(access="none", error=NO_ACCESS, signIn="unavailable", reason=reason)
     return status
 
 
@@ -457,6 +456,11 @@ class GeminiCliAdapter:
             if ver:
                 status += f" · v{ver}"
             status += " · logged in" if logged_in else " · not logged in"
+            from .gemini_auth import sign_in_refused
+
+            refused = sign_in_refused(_dot_gemini(None))
+            if refused:
+                status += f" · sign-in unavailable: {refused}"
             if extra and extra not in status:
                 status += f" · {extra}"
             available = enabled
@@ -476,6 +480,8 @@ class GeminiCliAdapter:
         )
         # Unset reads as "no account to sign in to" and showed Gemini Connected with no login.
         info.logged_in = logged_in  # type: ignore[attr-defined]
+        # Setup shows only the key field when this is set (Google refused the account).
+        info.sign_in_unavailable = refused if path else ""  # type: ignore[attr-defined]
         return info
 
     def launch(

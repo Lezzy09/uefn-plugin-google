@@ -91,10 +91,14 @@ def test_a_refused_account_shows_no_access_not_default(cli, tmp_path, monkeypatc
         time.sleep(0.02)
     st = account_status(str(tmp_path))
     assert st["loggedIn"] is True and st["access"] == "none" and st["error"] == gemini_auth.NO_ACCESS
+    # Setup offers only the free key: sign-in is unavailable, and says why.
+    assert st["signIn"] == "unavailable" and st["reason"] == "Google doesn't allow personal accounts here"
     from backend.gemini_cli_adapter import account_logout
 
     account_logout(str(tmp_path))  # logging out forgets the verdict with the login
     assert gemini_auth.read_access(tmp_path / ".gemini") is None
+    assert gemini_auth.sign_in_refused(tmp_path / ".gemini") == ""
+    assert "signIn" not in account_status(str(tmp_path))
 
 
 def test_sign_in_that_never_finishes_times_out(cli, tmp_path):
