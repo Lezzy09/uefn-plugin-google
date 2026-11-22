@@ -89,8 +89,6 @@ def register(api) -> None:
         login_status=aga.login_status,
         login_cancel=aga.login_cancel,
         logout=aga.logout,
-        account_env=aga.account_env,
-        account_login=aga.account_login,
         account_status=aga.account_status,
         account_logout=aga.account_logout,
         is_limit_error=aga.is_limit_error,
