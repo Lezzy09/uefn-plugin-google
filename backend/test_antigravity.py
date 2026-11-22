@@ -12,7 +12,8 @@ from backend.test_registration import _registered
 
 def test_registered_with_a_code_box_login_under_google() -> None:
     agent = _registered().coding_agents["antigravity"]
-    for hook in ("login", "login_submit", "login_status", "login_cancel", "logout", "is_limit_error"):
+    for hook in ("login", "login_submit", "login_status", "login_cancel", "logout", "is_limit_error",
+                 "account_env", "account_login", "account_status", "account_logout"):
         assert callable(agent[hook]), hook
     assert agent["settings_defaults"]["auto_approve"] is True
     assert isinstance(agent["factory"](), aga.AntigravityAdapter)
@@ -151,6 +152,21 @@ def test_a_refused_code_says_why(monkeypatch) -> None:
     out = agy_cli.submit_code("bad", wait_s=2)
     assert out["ok"] is False and "invalid_grant" in out["error"]
     assert agy_cli.submit_code("again")["error"].startswith("This sign-in ended")
+
+
+def test_logins_table_hooks(monkeypatch) -> None:
+    """The table's Log in used to fail with 'antigravity has no account_login'."""
+    monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
+    monkeypatch.setattr(agy_cli, "account_models", lambda b, **k: (False, []))
+    assert aga.account_login("C:/acc") == {"argv": ["agy.exe"], "env": {}}
+    assert aga.account_status(None) == {"loggedIn": False}
+    monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "")
+    monkeypatch.setattr(agy_cli, "install_in_background", lambda: None)
+    try:
+        aga.account_login(None)
+        raise AssertionError("no binary must refuse")
+    except ValueError:
+        pass
 
 
 def test_limit_errors() -> None:

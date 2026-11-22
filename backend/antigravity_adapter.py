@@ -361,6 +361,36 @@ def logout(cwd: str = "", cli_path: str = "", **_kw: Any) -> dict[str, Any]:
     return out
 
 
+# ── "Antigravity logins" table (core's account hooks) ──
+# ponytail: agy keeps one Google sign-in per PC, so every row is that sign-in and the
+# account folder is unused; per-account homes when agy documents a home override.
+
+def account_env(config_dir: str | None) -> dict[str, str]:
+    return {}
+
+
+def account_login(config_dir: str | None) -> dict[str, Any]:
+    """The table's Log in: agy's own sign-in in a terminal tab (the code box lives on the
+    Antigravity row's Log in; the table has none)."""
+    binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
+    if not binary:
+        agy_cli.install_in_background()
+        raise ValueError(agy_cli.install_status() or "Ducky is downloading Antigravity. Try again in a minute.")
+    return {"argv": [binary], "env": {}}
+
+
+def account_status(config_dir: str | None) -> dict[str, Any]:
+    binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
+    if not binary:
+        return {"loggedIn": False, "error": agy_cli.install_status() or "Antigravity isn't installed yet."}
+    state, _rows = agy_cli.account_models(binary)
+    return {"loggedIn": state is True}
+
+
+def account_logout(config_dir: str | None) -> None:
+    logout()
+
+
 def _refresh() -> None:
     try:
         from .gemini_auth import _refresh_agents
