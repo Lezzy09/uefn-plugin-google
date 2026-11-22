@@ -366,8 +366,8 @@ def _refresh() -> None:
 
 
 # ── "Antigravity logins" table (core's account hooks) ──
-# Same as Claude Code: the table's Log in runs the CLI's own sign-in in a terminal tab
-# (`agy acp --login`), the row's Log in is the code box above.
+# The table's Log in (and Log in another account): Google opens in the person's own browser and
+# the plugin's code box pops up (ui/agy_login.js asks popup_state); the table spins until signed in.
 # ponytail: agy keeps one Google sign-in per PC, so every row is that sign-in; per-account homes
 # via `--gemini-dir` if people want two Google accounts.
 
@@ -375,21 +375,29 @@ def account_env(config_dir: str | None) -> dict[str, str]:
     return {}
 
 
-def account_login(config_dir: str | None) -> dict[str, Any]:
-    binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
-    if not binary:
-        agy_cli.install_in_background()
-        raise ValueError(agy_cli.install_status() or "Ducky is downloading Antigravity. Try again in a minute.")
-    agy_cli.forget_models()  # the table re-reads the sign-in when the tab closes
-    return {"argv": [binary, "acp", "--login"], "env": {}}
+def account_browser_login(config_dir: str | None) -> dict[str, Any]:
+    out = agy_cli.start_login(str(_cfg().get("cli_path") or ""))
+    if not out.get("ok"):
+        return {"error": out.get("error") or "Could not start the Antigravity sign-in."}
+    agy_cli._login["popup"] = True
+    return {"message": "Sign in with Google in your browser, then paste the code in the box."}
 
 
 def account_status(config_dir: str | None) -> dict[str, Any]:
     binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
     if not binary:
         return {"loggedIn": False, "error": agy_cli.install_status() or "Antigravity isn't installed yet."}
+    if agy_cli.popup_state()["open"]:
+        return {"loggedIn": False, "pending": True}
     state, _rows = agy_cli.account_models(binary)
     return {"loggedIn": state is True}
+
+
+def popup_submit(code: str = "") -> dict[str, Any]:
+    out = agy_cli.submit_code(code)
+    if out.get("logged_in"):
+        _refresh()
+    return out
 
 
 def account_logout(config_dir: str | None) -> None:

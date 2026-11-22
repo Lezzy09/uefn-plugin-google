@@ -73,6 +73,7 @@ def register(api) -> None:
         account_logout=gca.account_logout,
         is_limit_error=gca.is_limit_error,
     )
+    from . import agy_cli
     from . import antigravity_adapter as aga
 
     # Settings → LLMs → Google → Antigravity → Log in: the Google page in the person's own
@@ -90,11 +91,16 @@ def register(api) -> None:
         login_cancel=aga.login_cancel,
         logout=aga.logout,
         account_env=aga.account_env,
-        account_login=aga.account_login,
+        account_browser_login=aga.account_browser_login,
         account_status=aga.account_status,
         account_logout=aga.account_logout,
         is_limit_error=aga.is_limit_error,
     )
+    if hasattr(api, "register_panel_rpc"):  # the code box in ui/agy_login.js
+        api.register_panel_rpc("agy_login_state", lambda: agy_cli.popup_state())
+        api.register_panel_rpc("agy_login_submit", lambda code="": aga.popup_submit(code))
+        api.register_panel_rpc("agy_login_open", lambda: agy_cli.reopen_browser())
+        api.register_panel_rpc("agy_login_cancel", lambda: agy_cli.cancel_login())
     api.register_ide_hookup("antigravity", label="Antigravity")
     try:
         from .cli_update import schedule_cli_update_on_plugin_load

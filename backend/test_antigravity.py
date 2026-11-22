@@ -13,7 +13,7 @@ from backend.test_registration import _registered
 def test_registered_with_a_code_box_login_under_google() -> None:
     agent = _registered().coding_agents["antigravity"]
     for hook in ("login", "login_submit", "login_status", "login_cancel", "logout", "is_limit_error",
-                 "account_env", "account_login", "account_status", "account_logout"):
+                 "account_env", "account_browser_login", "account_status", "account_logout"):
         assert callable(agent[hook]), hook
     assert agent["settings_defaults"]["auto_approve"] is True
     assert isinstance(agent["factory"](), aga.AntigravityAdapter)
@@ -154,10 +154,37 @@ def test_a_refused_code_says_why(monkeypatch) -> None:
     assert agy_cli.submit_code("again")["error"].startswith("This sign-in ended")
 
 
-def test_logins_table_like_claude_code(monkeypatch) -> None:
-    """The table's Log in runs agy's own sign-in in a terminal tab, like `claude auth login`."""
+def test_the_tables_log_in_opens_the_browser_and_the_plugins_code_box(monkeypatch) -> None:
+    """Old: a terminal tab waiting for the code, no box. Now Google opens in the browser and
+    ui/agy_login.js shows the box while popup_state says open."""
     monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
-    assert aga.account_login(None) == {"argv": ["agy.exe", "acp", "--login"], "env": {}}
+    proc = _FakeLogin(["https://accounts.google.com/o/oauth2/auth?x=1\n"])
+    opened: list[str] = []
+    real = agy_cli.start_login
+    monkeypatch.setattr(agy_cli, "start_login", lambda cli_path="": real(
+        cli_path, popen=lambda *a, **k: proc, open_url=opened.append, wait_s=5))
+    assert agy_cli.popup_state()["open"] is False
+
+    assert "message" in aga.account_browser_login("C:/acc")
+    assert opened == ["https://accounts.google.com/o/oauth2/auth?x=1"]
+    assert agy_cli.popup_state() == {"ok": True, "open": True, "auth_url": opened[0]}
+    assert aga.account_status(None) == {"loggedIn": False, "pending": True}  # the table spins
+
+    assert aga.popup_submit("4/0code")["logged_in"] is True
+    assert agy_cli.popup_state()["open"] is False
+
+
+def test_the_rows_code_box_never_also_pops_the_plugins_box(monkeypatch) -> None:
+    monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
+    proc = _FakeLogin(["https://accounts.google.com/x\n"])
+    agy_cli.start_login(popen=lambda *a, **k: proc, open_url=lambda u: None, wait_s=5)
+    assert agy_cli.popup_state()["open"] is False
+    agy_cli.cancel_login()
+
+
+def test_a_failed_start_tells_the_table(monkeypatch) -> None:
+    monkeypatch.setattr(agy_cli, "start_login", lambda cli_path="": {"ok": False, "error": "downloading"})
+    assert aga.account_browser_login(None) == {"error": "downloading"}
     assert aga.account_env("C:/acc") == {}
     monkeypatch.setattr(agy_cli, "account_models", lambda b, **k: (False, []))
     assert aga.account_status(None) == {"loggedIn": False}

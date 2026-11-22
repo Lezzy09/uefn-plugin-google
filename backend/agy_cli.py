@@ -33,7 +33,8 @@ _MODEL_ID_RE = re.compile(r"^[a-z][a-z0-9.\-]*[0-9][a-z0-9.\-]*$")
 _install: dict[str, Any] = {"busy": False, "error": ""}
 _install_lock = threading.Lock()
 # ponytail: one Settings sign-in at a time, in this process; Log in again replaces it.
-_login: dict[str, Any] = {"proc": None, "url": "", "out": [], "error": ""}
+# popup: the logins table started it, so the plugin's own code box (ui/agy_login.js) asks for the code.
+_login: dict[str, Any] = {"proc": None, "url": "", "out": [], "error": "", "popup": False}
 _models: dict[str, Any] = {"at": 0.0, "bin": "", "rows": [], "signed_in": None}
 MODELS_TTL_S = 600.0
 
@@ -190,7 +191,7 @@ def _stop_login() -> None:
             proc.kill()
         except OSError:
             pass
-    _login.update(proc=None, url="", out=[], error="")
+    _login.update(proc=None, url="", out=[], error="", popup=False)
 
 
 def _last_line(lines: list[str]) -> str:
@@ -275,6 +276,20 @@ def submit_code(code: str, *, wait_s: float = SUBMIT_WAIT_S) -> dict[str, Any]:
     err = _last_line(_login["out"][seen:]) or "Google did not accept that code. Press Log in again."
     _stop_login()
     return {"ok": False, "logged_in": False, "error": err}
+
+
+def popup_state() -> dict[str, Any]:
+    """For the plugin's code box: open while a table-started sign-in waits for its code."""
+    proc = _login.get("proc")
+    alive = bool(_login.get("popup")) and proc is not None and proc.poll() is None
+    return {"ok": True, "open": alive, "auth_url": _login.get("url") or "" if alive else ""}
+
+
+def reopen_browser(*, open_url: Callable[[str], Any] = webbrowser.open) -> dict[str, Any]:
+    url = _login.get("url") or ""
+    if url:
+        open_url(url)
+    return {"ok": bool(url)}
 
 
 def cancel_login() -> dict[str, Any]:
