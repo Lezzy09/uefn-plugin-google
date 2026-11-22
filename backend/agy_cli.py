@@ -106,12 +106,22 @@ def install(fetch: Callable[[str], bytes] | None = None) -> dict[str, Any]:
                 part.unlink(missing_ok=True)
                 raise ValueError("Antigravity download did not match Google's checksum")
             os.replace(part, dest)
+            refresh_agents()  # the row read "Not found" while this ran: its Log in shows now
             return {"ok": True, "cli_path": str(dest), "version": man["version"]}
         except Exception as exc:
             _install["error"] = f"Antigravity install failed: {exc}"
             return {"ok": False, "error": _install["error"]}
         finally:
             _install["busy"] = False
+
+
+def refresh_agents() -> None:
+    try:
+        from .gemini_auth import _refresh_agents
+
+        _refresh_agents()
+    except Exception:
+        pass
 
 
 def install_in_background() -> None:

@@ -361,6 +361,10 @@ def logout(cwd: str = "", cli_path: str = "", **_kw: Any) -> dict[str, Any]:
     return out
 
 
+def _refresh() -> None:
+    agy_cli.refresh_agents()
+
+
 # ── "Antigravity logins" table (core's account hooks) ──
 # ponytail: agy keeps one Google sign-in per PC, so every row is that sign-in and the
 # account folder is unused; per-account homes when agy documents a home override.
@@ -369,14 +373,18 @@ def account_env(config_dir: str | None) -> dict[str, str]:
     return {}
 
 
+USE_ROW_LOGIN = ("Sign in with Log in on the Antigravity row under Coding agent, lower on this page: it opens "
+                 "Google in your browser and a box for the code.")
+
+
 def account_login(config_dir: str | None) -> dict[str, Any]:
-    """The table's Log in: agy's own sign-in in a terminal tab (the code box lives on the
-    Antigravity row's Log in; the table has none)."""
-    binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
-    if not binary:
+    """The table's Log in. The table has no box for Google's code (a terminal tab was all it
+    could open), so it points at the row's Log in, which has one."""
+    if not agy_cli.resolve_bin(str(_cfg().get("cli_path") or "")):
         agy_cli.install_in_background()
         raise ValueError(agy_cli.install_status() or "Ducky is downloading Antigravity. Try again in a minute.")
-    return {"argv": [binary], "env": {}}
+    _refresh()  # the row's Log in shows once detect sees agy
+    raise ValueError(USE_ROW_LOGIN)
 
 
 def account_status(config_dir: str | None) -> dict[str, Any]:
@@ -391,10 +399,3 @@ def account_logout(config_dir: str | None) -> None:
     logout()
 
 
-def _refresh() -> None:
-    try:
-        from .gemini_auth import _refresh_agents
-
-        _refresh_agents()
-    except Exception:
-        pass

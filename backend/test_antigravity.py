@@ -158,7 +158,11 @@ def test_logins_table_hooks(monkeypatch) -> None:
     """The table's Log in used to fail with 'antigravity has no account_login'."""
     monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
     monkeypatch.setattr(agy_cli, "account_models", lambda b, **k: (False, []))
-    assert aga.account_login("C:/acc") == {"argv": ["agy.exe"], "env": {}}
+    try:
+        aga.account_login("C:/acc")
+        raise AssertionError("the table has no code box: it must point at the row's Log in")
+    except ValueError as exc:
+        assert "Coding agent" in str(exc)
     assert aga.account_status(None) == {"loggedIn": False}
     monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "")
     monkeypatch.setattr(agy_cli, "install_in_background", lambda: None)
