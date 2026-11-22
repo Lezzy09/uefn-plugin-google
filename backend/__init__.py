@@ -12,6 +12,12 @@ _INSTALL_HELP = (
 )
 
 
+_AGY_HELP = (
+    "Ducky downloads Google's Antigravity CLI for you. Log in signs in with your Google "
+    "account in your own browser; chats then run on your Google AI plan, no API key."
+)
+
+
 def _fetch_models(api_key: str, **_kw: Any) -> Any:
     from .model_fetch import fetch_models
 
@@ -67,6 +73,24 @@ def register(api) -> None:
         account_logout=gca.account_logout,
         is_limit_error=gca.is_limit_error,
     )
+    from . import antigravity_adapter as aga
+
+    # Settings → LLMs → Google → Antigravity → Log in: the Google page in the person's own
+    # browser and a box for its code, the way Claude Code signs in.
+    api.register_coding_agent(
+        "antigravity",
+        factory=lambda: aga.AntigravityAdapter(),
+        aliases=["agy", "antigravity_cli"],
+        skills_dir=_skills_dir,
+        settings_defaults={"enabled": True, "cli_path": "", "default_args": "", "auto_approve": True},
+        install_help=_AGY_HELP,
+        login=aga.login,
+        login_submit=aga.login_submit,
+        login_status=aga.login_status,
+        login_cancel=aga.login_cancel,
+        logout=aga.logout,
+        is_limit_error=aga.is_limit_error,
+    )
     api.register_ide_hookup("antigravity", label="Antigravity")
     try:
         from .cli_update import schedule_cli_update_on_plugin_load
@@ -84,4 +108,4 @@ def register(api) -> None:
         api.register_media_generator(
             "image", graph_nodes.generate_image, {"label": "Google Gemini", "secret_key": "gemini"}
         )
-    api.log("Google gateway contribution active (Providers + Gemini CLI + Antigravity IDE)")
+    api.log("Google gateway contribution active (Providers + Gemini CLI + Antigravity + Antigravity IDE)")
