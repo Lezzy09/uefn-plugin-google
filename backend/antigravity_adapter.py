@@ -366,8 +366,23 @@ def _refresh() -> None:
 
 
 # ── "Antigravity logins" table (core's account hooks) ──
-# ponytail: agy keeps one Google sign-in per PC, so there's no account_login: the table's Log in
-# opens login() above (link + code box) for every row. Per-account homes when agy documents one.
+# Same as Claude Code: the table's Log in runs the CLI's own sign-in in a terminal tab
+# (`agy acp --login`), the row's Log in is the code box above.
+# ponytail: agy keeps one Google sign-in per PC, so every row is that sign-in; per-account homes
+# via `--gemini-dir` if people want two Google accounts.
+
+def account_env(config_dir: str | None) -> dict[str, str]:
+    return {}
+
+
+def account_login(config_dir: str | None) -> dict[str, Any]:
+    binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))
+    if not binary:
+        agy_cli.install_in_background()
+        raise ValueError(agy_cli.install_status() or "Ducky is downloading Antigravity. Try again in a minute.")
+    agy_cli.forget_models()  # the table re-reads the sign-in when the tab closes
+    return {"argv": [binary, "acp", "--login"], "env": {}}
+
 
 def account_status(config_dir: str | None) -> dict[str, Any]:
     binary = agy_cli.resolve_bin(str(_cfg().get("cli_path") or ""))

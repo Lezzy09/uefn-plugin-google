@@ -13,9 +13,8 @@ from backend.test_registration import _registered
 def test_registered_with_a_code_box_login_under_google() -> None:
     agent = _registered().coding_agents["antigravity"]
     for hook in ("login", "login_submit", "login_status", "login_cancel", "logout", "is_limit_error",
-                 "account_status", "account_logout"):
+                 "account_env", "account_login", "account_status", "account_logout"):
         assert callable(agent[hook]), hook
-    assert "account_login" not in agent  # no per-account login: the table's Log in opens login()'s code box
     assert agent["settings_defaults"]["auto_approve"] is True
     assert isinstance(agent["factory"](), aga.AntigravityAdapter)
 
@@ -155,8 +154,11 @@ def test_a_refused_code_says_why(monkeypatch) -> None:
     assert agy_cli.submit_code("again")["error"].startswith("This sign-in ended")
 
 
-def test_logins_table_status(monkeypatch) -> None:
+def test_logins_table_like_claude_code(monkeypatch) -> None:
+    """The table's Log in runs agy's own sign-in in a terminal tab, like `claude auth login`."""
     monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
+    assert aga.account_login(None) == {"argv": ["agy.exe", "acp", "--login"], "env": {}}
+    assert aga.account_env("C:/acc") == {}
     monkeypatch.setattr(agy_cli, "account_models", lambda b, **k: (False, []))
     assert aga.account_status(None) == {"loggedIn": False}
     monkeypatch.setattr(agy_cli, "account_models", lambda b, **k: (True, []))
