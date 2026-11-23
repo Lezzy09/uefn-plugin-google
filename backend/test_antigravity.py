@@ -275,3 +275,70 @@ def test_the_real_install_is_google_signed() -> None:
 
 def test_limit_errors() -> None:
     assert aga.is_limit_error("RESOURCE_EXHAUSTED: 429") and not aga.is_limit_error("syntax error")
+
+
+def _fake_agy(monkeypatch, tmp_path, hangs: int) -> list[dict[str, Any]]:
+    """agy that goes silent ``hangs`` times (until killed), then answers."""
+    import functools
+    from types import SimpleNamespace
+
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kw: Any) -> SimpleNamespace:
+        calls.append(kw)
+        if len(calls) <= hangs:
+            assert kw["cancel"].wait(5), "the watchdog never killed a silent agy"
+            return SimpleNamespace(cancelled=True, stderr_tail="", raw_tail="")
+        kw["on_line"](json.dumps({"event": "result", "result": {"conversation_id": "c2", "status": "SUCCESS",
+                                                               "response": "done"}}))
+        return SimpleNamespace(cancelled=False, stderr_tail="", raw_tail="")
+
+    monkeypatch.setattr(aga, "run_streaming_process", fake)
+    monkeypatch.setattr(aga, "finalize_cli_turn", lambda *, proc, reply, **kw: aga.CodingAgentLaunchResult(
+        ok=not proc.cancelled, status="cancelled" if proc.cancelled else "ok", reply=reply))
+    monkeypatch.setattr(aga, "watch_stall", functools.partial(aga.watch_stall, idle_s=0.05, poll=0.01))
+    monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy")
+    monkeypatch.setattr(aga, "prompt_dir", lambda conv_id: tmp_path)
+    return calls
+
+
+def _launch(**kw: Any):
+    return aga.AntigravityAdapter().launch(prompt="fix the lag", system_prompt="sys", cwd=".", conv_id="chat1",
+                                           model="", mcp_config_path="", extra_args="", cli_path="", env={},
+                                           push=lambda e: None, session_id="c1", **kw)
+
+
+def test_a_silent_agy_is_restarted_once_in_a_fresh_conversation(monkeypatch, tmp_path) -> None:
+    calls = _fake_agy(monkeypatch, tmp_path, hangs=1)
+    result = _launch()
+    assert result.ok and len(calls) == 2
+    assert "--conversation" in calls[0]["argv"] and "--conversation" not in calls[1]["argv"]
+    prompt = calls[1]["argv"][calls[1]["argv"].index("-p") + 1]
+    assert 'ducky_read_chat(conv_id="chat1")' in prompt and "fix the lag" in prompt
+
+
+def test_two_stalls_end_with_a_clear_error_never_a_third_run(monkeypatch, tmp_path) -> None:
+    calls = _fake_agy(monkeypatch, tmp_path, hangs=2)
+    result = _launch()
+    assert not result.ok and result.error == aga.STALLED and len(calls) == 2
+
+
+def test_the_persons_stop_is_never_retried(monkeypatch, tmp_path) -> None:
+    import threading
+
+    calls = _fake_agy(monkeypatch, tmp_path, hangs=1)
+    stop = threading.Event()
+    stop.set()
+    result = _launch(cancel=stop)
+    assert len(calls) == 1 and result.error != aga.STALLED
+
+
+def test_a_running_tool_gets_the_longer_limit() -> None:
+    import threading
+
+    state = aga.AgyStream("chat1", "r", lambda e: None)
+    state._open["1"] = "workspace_compile_verse"
+    stop = threading.Event()
+    stalled = aga.watch_stall(state, stop, None, idle_s=0.01, tool_idle_s=60, poll=0.01)
+    assert not stop.wait(0.1) and not stalled.is_set()
+    stop.set()

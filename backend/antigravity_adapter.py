@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,39 @@ _LIMIT_RE = re.compile(r"quota exceeded|resource[_ ]exhausted|\b429\b|too many r
                        r"|exhausted your (?:daily |weekly )?(?:quota|capacity|limit)", re.I)
 ARG_PROMPT_MAX = 6000  # the rest of a message goes in a file: Windows caps a command line at ~32K
 _RUN_ID_FLAG = "--ducky-run-id"
+# A long agy conversation can go silent mid-turn: no output, no exit, no error (Nov 23 2026).
+# ponytail: fixed limits; a tool running counts as alive for longer (a Verse build takes minutes).
+IDLE_S = 240.0
+TOOL_IDLE_S = 900.0
+STALLED = ("Antigravity stopped responding twice (no output for minutes). Send your message "
+           "again, or pick another model.")
+
+
+def recover_note(conv_id: str) -> str:
+    return ("(Ducky: this chat's earlier Antigravity conversation stopped responding and was "
+            f"replaced by this new one. First catch up with ducky_read_chat(conv_id=\"{conv_id}\"), "
+            "check what was already changed, then do the message below.)\n\n")
+
+
+def watch_stall(state: "AgyStream", stop: threading.Event, user_cancel: threading.Event | None, *,
+                idle_s: float = IDLE_S, tool_idle_s: float = TOOL_IDLE_S, poll: float = 2.0) -> threading.Event:
+    """Sets ``stop`` (which kills agy) on the person's Stop, or when agy prints nothing for
+    too long; the returned event says it was a stall."""
+    stalled = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(poll):
+            if user_cancel is not None and user_cancel.is_set():
+                stop.set()
+                return
+            limit = tool_idle_s if state._open else idle_s
+            if time.monotonic() - state.last_seen > limit:
+                stalled.set()
+                stop.set()
+                return
+
+    threading.Thread(target=loop, daemon=True, name=f"agy-watch-{state.conv_id[:8]}").start()
+    return stalled
 
 
 def is_limit_error(text: str) -> bool:
@@ -182,6 +216,7 @@ class AgyStream:
         self.usage: dict[str, int] = {}
         self._open: dict[str, str] = {}
         self._closed: set[str] = set()
+        self.last_seen = time.monotonic()
 
     def _emit(self, event: dict[str, Any]) -> None:
         self.push({**event, "conv_id": self.conv_id, "run_id": self.run_id})
@@ -192,6 +227,7 @@ class AgyStream:
             self._emit({"type": "assistant_delta", "text": chunk})
 
     def on_line(self, line: str) -> None:
+        self.last_seen = time.monotonic()
         try:
             data = json.loads((line or "").strip())
         except ValueError:
@@ -306,24 +342,40 @@ class AntigravityAdapter:
         auto = bool(_cfg().get("auto_approve", True))
         tails: list[str] = []
 
-        def run(sid: str) -> CodingAgentLaunchResult:
-            argv = build_argv(binary=binary, prompt=build_prompt(folder, system_prompt, prompt, resumed=bool(sid)),
+        def run(sid: str, note: str = "") -> CodingAgentLaunchResult:
+            argv = build_argv(binary=binary, prompt=build_prompt(folder, system_prompt, note + prompt,
+                                                                  resumed=bool(sid)),
                               model=model, extra_args=extra_args, auto_approve=auto, add_dir=str(folder),
                               session_id=sid)
             state = AgyStream(conv_id, run_id, push)
+            stop = threading.Event()
+            stalled = watch_stall(state, stop, cancel)
             proc = run_streaming_process(argv=argv, cwd=cwd, env_extra=run_env, conv_id=conv_id,
-                                         on_line=state.on_line, timeout_s=timeout_s, cancel=cancel, stdin_data="")
+                                         on_line=state.on_line, timeout_s=timeout_s, cancel=stop, stdin_data="")
+            stop.set()
             reply = "".join(state.text_parts).strip()
             tails[:] = [proc.stderr_tail or "", proc.raw_tail or "", state.error_text]
-            return finalize_cli_turn(proc=proc, reply=reply, streamed=bool(reply) or bool(state.blocks),
-                                     blocks=state.blocks, session_id=sid, new_session=state.session_id or sid,
-                                     usage=state.usage, agent_label=LABEL, timeout_s=timeout_s,
-                                     error_text=state.error_text, stale_session_markers=STALE_SESSION_MARKERS)
+            out = finalize_cli_turn(proc=proc, reply=reply, streamed=bool(reply) or bool(state.blocks),
+                                    blocks=state.blocks, session_id=sid, new_session=state.session_id or sid,
+                                    usage=state.usage, agent_label=LABEL, timeout_s=timeout_s,
+                                    error_text=state.error_text, stale_session_markers=STALE_SESSION_MARKERS)
+            out.stalled = stalled.is_set()  # type: ignore[attr-defined]
+            return out
+
+        def user_stopped() -> bool:
+            return cancel is not None and cancel.is_set()
 
         push({"type": "status", "text": "Starting Antigravity…", "conv_id": conv_id, "run_id": run_id})
         sid = (session_id or "").strip()
         result = run(sid)
-        if result.ok:
+        if getattr(result, "stalled", False) and not user_stopped():
+            push({"type": "status", "text": "Antigravity went quiet. Starting it again in a fresh conversation…",
+                  "conv_id": conv_id, "run_id": run_id})
+            result = run("", recover_note(conv_id))  # once: a fresh conversation, never a wedged chat
+            if getattr(result, "stalled", False) and not user_stopped():
+                result.ok, result.status, result.error = False, "error", STALLED
+            return result
+        if result.ok or user_stopped():
             return result
         texts = (result.error or "", *tails)
         if any(agy_cli.signed_out(t) for t in texts):
@@ -334,7 +386,7 @@ class AntigravityAdapter:
             result.error = LIMITED
             return result
         if sid and not result.reply_text and not getattr(result, "blocks", None):
-            result = run("")  # agy lost that conversation: once more as a new one, never a wedged chat
+            result = run("", recover_note(conv_id))  # agy lost that conversation: once more as a new one
         return result
 
 
