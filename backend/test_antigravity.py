@@ -27,34 +27,49 @@ def test_plugin_json_lists_the_agent() -> None:
     assert "antigravity" in [a["id"] for a in manifest["contributes"]["llm.coding_agents"]]
 
 
-def test_stream_text_tools_usage_and_conversation() -> None:
+def _up(i: int, state: str, kind: str, **kw: Any) -> dict[str, Any]:
+    return {"event": "step_update", "step_update": {"conversation_id": "conv-9", "step_index": i,
+                                                    "state": state, "step_type": kind, **kw}}
+
+
+def test_stream_as_agy_prints_it() -> None:
+    """Lines as `agy -p … --output-format stream-json` prints them (Nov 2026). The old parser
+    read `type`/`status`/`text` keys agy never sends: every chat came back empty."""
     events: list[dict[str, Any]] = []
     s = aga.AgyStream("c1", "r1", events.append)
+    tool = {"name": "call_mcp_tool", "parameters": {"ServerName": "uefn", "ToolName": "workspace_find"}}
     for line in [
-        {"type": "init", "conversation_id": "conv-9"},
-        {"type": "step_update", "step_index": 1, "step_type": "mcp_tool", "tool": "uefn.workspace_find",
-         "status": "running", "args": {"pattern": "*.verse"}},
-        {"type": "step_update", "step_index": 1, "step_type": "mcp_tool", "status": "done", "output": "a.verse"},
-        {"type": "step_update", "step_index": 1, "step_type": "mcp_tool", "status": "done", "output": "again"},
-        {"type": "step_update", "step_index": 2, "step_type": "planner_response", "status": "done", "text": "Found it."},
-        {"type": "result", "usage": {"input_tokens": 120, "output_tokens": 8, "cache_read_tokens": 40}},
+        {"event": "init", "conversation_id": "conv-9", "init": {"model": "gemini-4-neon-low"}},
+        _up(0, "DONE", "user_input"),
+        _up(1, "DONE", "agent_response", usage={"input_tokens": 1}),
+        _up(2, "ACTIVE", "tool", tool_name="call_mcp_tool", tool_info=tool),
+        _up(2, "DONE", "tool", tool_name="call_mcp_tool", tool_info={**tool, "output": "a.verse"}),
+        _up(2, "DONE", "tool", tool_name="call_mcp_tool", tool_info={**tool, "output": "again"}),
+        _up(3, "ACTIVE", "agent_response", text_delta="Found"),
+        _up(3, "DONE", "agent_response", text_delta=" it.\n"),
+        {"event": "result", "result": {"conversation_id": "conv-9", "status": "SUCCESS", "response": "Found it.\n",
+                                       "usage": {"input_tokens": 120, "output_tokens": 8, "cache_read_tokens": 40}}},
     ]:
         s.on_line(json.dumps(line))
     s.on_line("not json")
     kinds = [e["type"] for e in events]
-    assert kinds == ["tool_start", "tool_done", "assistant_delta"]  # the repeated done is ignored
-    assert events[0]["tool"]["name"] == "uefn.workspace_find" and events[1]["tool"]["result"] == "a.verse"
+    assert kinds == ["tool_start", "tool_done", "assistant_delta", "assistant_delta"]  # repeated done ignored
+    assert events[0]["tool"]["name"] == "call_mcp_tool" and events[0]["tool"]["args"]["ToolName"] == "workspace_find"
+    assert events[1]["tool"]["result"] == "a.verse" and events[1]["success"] is True
     assert all(e["conv_id"] == "c1" and e["run_id"] == "r1" for e in events)
-    assert "".join(s.text_parts) == "Found it." and s.session_id == "conv-9"
+    assert "".join(s.text_parts) == "Found it.\n" and s.session_id == "conv-9"
     assert s.usage == {"input_tokens": 120, "output_tokens": 8, "cache_read_tokens": 40}
+    assert s.error_text == ""
 
 
 def test_result_text_used_when_nothing_streamed_and_errors_kept() -> None:
     s = aga.AgyStream("c", "r", lambda e: None)
-    s.on_line(json.dumps({"type": "result", "result": "Hi."}))
-    s.on_line(json.dumps({"type": "error", "message": "boom"}))
-    assert s.text_parts == ["Hi."] and s.error_text == "boom"
-
+    s.on_line(json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": "Hi.\n"}}))
+    assert s.text_parts == ["Hi."]
+    s.on_line(json.dumps({"event": "error", "error": {"message": "boom"}}))
+    assert s.error_text == "boom"
+    s.on_line(json.dumps({"event": "result", "result": {"status": "FAILED", "error": "quota exceeded"}}))
+    assert s.error_text == "quota exceeded"
 
 def test_argv() -> None:
     argv = aga.build_argv(binary="agy", prompt="hi", model="gemini-3-pro", extra_args="--foo 1",

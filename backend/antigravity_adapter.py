@@ -167,9 +167,11 @@ def _num(d: dict[str, Any], *keys: str) -> int:
 
 
 class AgyStream:
-    """agy's stream-json: ``init`` → ``step_update``… → ``result`` (or ``error``).
-    ponytail: step fields read loosely (``text``/``content``, ``tool``/``step_type``): the
-    format isn't documented; an unknown step still shows as a tool row."""
+    """agy's stream-json, as agy prints it:
+    ``{"event":"init","conversation_id":…}`` →
+    ``{"event":"step_update","step_update":{step_index, state ACTIVE|DONE, step_type
+    agent_response (text_delta) | tool (tool_name, tool_info{parameters, output}) | user_input}}``…
+    → ``{"event":"result","result":{conversation_id, status, response, usage}}``."""
 
     def __init__(self, conv_id: str, run_id: str, push: Any) -> None:
         self.conv_id, self.run_id, self.push = conv_id, run_id, push
@@ -196,52 +198,54 @@ class AgyStream:
             return
         if not isinstance(data, dict):
             return
-        et = str(data.get("type") or "").lower()
-        if et == "init":
-            self.session_id = str(data.get("conversation_id") or data.get("conversationId")
-                                  or data.get("session_id") or self.session_id)
-        elif et in ("message", "text", "assistant", "assistant_delta"):
-            if str(data.get("role") or "assistant").lower() == "assistant":
-                self._text(str(data.get("text") or data.get("content") or data.get("delta") or ""))
-        elif et == "step_update":
-            self._step(data)
+        et = str(data.get("event") or data.get("type") or "").lower()
+        body = data.get(et) if isinstance(data.get(et), dict) else data
+        sid = str(data.get("conversation_id") or body.get("conversation_id") or "")
+        if sid and et in ("init", "result"):
+            self.session_id = sid
+        if et == "step_update":
+            self._step(body)
         elif et == "error":
-            self.error_text = str(data.get("message") or data.get("error") or "").strip() or self.error_text
+            err = data.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            self.error_text = str(msg or data.get("message") or "").strip() or self.error_text
         elif et == "result":
-            self.session_id = str(data.get("conversation_id") or data.get("session_id") or self.session_id)
-            usage = data.get("usage") if isinstance(data.get("usage"), dict) else data.get("stats")
+            usage = body.get("usage")
             if isinstance(usage, dict):
-                self.usage = {"input_tokens": _num(usage, "input_tokens", "inputTokens", "input"),
-                              "output_tokens": _num(usage, "output_tokens", "outputTokens", "output"),
-                              "cache_read_tokens": _num(usage, "cache_read_tokens", "cachedTokens", "cached")}
-            if str(data.get("subtype") or data.get("status") or "").lower() in ("error", "failed"):
-                self.error_text = str(data.get("error") or data.get("message") or self.error_text)
-            resp = str(data.get("result") or data.get("response") or "").strip()
-            if resp and not self.text_parts:
-                self._text(resp)
+                self.usage = {"input_tokens": _num(usage, "input_tokens"),
+                              "output_tokens": _num(usage, "output_tokens"),
+                              "cache_read_tokens": _num(usage, "cache_read_tokens")}
+            if str(body.get("status") or "SUCCESS").upper() not in ("SUCCESS", "OK", "DONE"):
+                err = body.get("error")
+                msg = err.get("message") if isinstance(err, dict) else err
+                self.error_text = str(msg or body.get("message") or f"Antigravity stopped: {body.get('status')}")
+            resp = body.get("response") if body is not data else data.get("result")
+            if isinstance(resp, str) and resp.strip() and not self.text_parts:
+                self._text(resp.strip())
 
-    def _step(self, data: dict[str, Any]) -> None:
-        step = data.get("step") if isinstance(data.get("step"), dict) else data
-        sid = str(step.get("step_index", data.get("step_index", "")))
-        kind = str(step.get("step_type") or step.get("type") or "step").lower()
-        status = str(step.get("status") or "").lower()
-        if kind in ("planner_response", "response", "message", "text"):
-            if status in ("", "done", "completed", "complete"):
-                self._text(str(step.get("text") or step.get("content") or ""))
+    def _step(self, step: dict[str, Any]) -> None:
+        sid = str(step.get("step_index", ""))
+        kind = str(step.get("step_type") or "").lower()
+        state = str(step.get("state") or "").upper()
+        if kind == "user_input":
             return
-        name = str(step.get("tool") or step.get("tool_name") or step.get("name") or kind)
-        if sid in self._closed:  # agy repeats a finished step's last update
+        if kind == "agent_response":
+            self._text(str(step.get("text_delta") or ""))  # streamed: every update carries the next piece
+            return
+        info = step.get("tool_info") if isinstance(step.get("tool_info"), dict) else {}
+        name = str(step.get("tool_name") or info.get("name") or kind or "step")
+        if sid in self._closed:  # agy may repeat a finished step's last update
             return
         if sid not in self._open:
-            args = step.get("args") or step.get("input") or step.get("parameters") or {}
+            args = info.get("parameters") or {}
             self._open[sid] = name
             self._emit({"type": "tool_start", "tool": {"id": sid or name, "name": name,
                                                        "args": args if isinstance(args, dict) else {"raw": args}}})
-        if status in ("done", "completed", "complete", "error", "failed", "cancelled"):
+        if state in ("DONE", "ERROR", "FAILED", "CANCELED", "CANCELLED"):
             name = self._open.pop(sid, name)
             self._closed.add(sid)
-            ok = status not in ("error", "failed", "cancelled")
-            result = truncate_tool_result(str(step.get("output") or step.get("result") or step.get("error") or ""))
+            ok = state == "DONE"
+            result = truncate_tool_result(str(info.get("output") or info.get("error") or step.get("error") or ""))
             self.blocks.append({"type": "tool", "name": name, "id": sid, "result": result, "ok": ok})
             self._emit({"type": "tool_done", "success": ok, "tool": {"id": sid or name, "name": name, "result": result}})
 
