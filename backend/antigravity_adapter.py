@@ -389,7 +389,12 @@ def account_status(config_dir: str | None) -> dict[str, Any]:
         return {"loggedIn": False, "error": agy_cli.install_status() or "Antigravity isn't installed yet."}
     if agy_cli.popup_state()["open"]:
         return {"loggedIn": False, "pending": True}
-    state, _rows = agy_cli.account_models(binary)
+    # Asked fresh (about 3 s): a sign-in made anywhere else (a terminal, another app) shows on
+    # the table's Refresh, and a change re-reads the model picker's list, cached 10 minutes.
+    before = agy_cli._models.get("signed_in") if agy_cli._models.get("bin") == binary else None
+    state, _rows = agy_cli.account_models(binary, force=True)
+    if state != before:
+        _refresh()
     return {"loggedIn": state is True}
 
 

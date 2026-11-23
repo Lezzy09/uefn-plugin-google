@@ -195,6 +195,20 @@ def test_a_failed_start_tells_the_table(monkeypatch) -> None:
     assert aga.account_status(None)["loggedIn"] is False
 
 
+def test_a_sign_in_made_elsewhere_reaches_the_model_picker_on_refresh(monkeypatch) -> None:
+    """Signed in in a terminal: the picker kept a signed-out list (no models) for 20 minutes."""
+    monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "agy.exe")
+    refreshed: list[int] = []
+    monkeypatch.setattr(agy_cli, "refresh_agents", lambda: refreshed.append(1))
+    agy_cli._models.update(bin="agy.exe", signed_in=False, at=1e18)  # cached: signed out
+    answers = iter([(True, [{"id": "gemini-4-neon-low"}]), (True, [])])
+    monkeypatch.setattr(agy_cli, "account_models", lambda b, force=False, **k: (
+        agy_cli._models.update(signed_in=(st := next(answers))[0]) or st))
+    assert aga.account_status(None) == {"loggedIn": True} and refreshed == [1]
+    assert aga.account_status(None) == {"loggedIn": True} and refreshed == [1]  # no change: no re-read
+    agy_cli.forget_models()
+
+
 def test_only_googles_signed_agy_runs_never_a_shim(monkeypatch, tmp_path) -> None:
     """A Google AI plan is only allowed through Antigravity itself: a look-alike `agy` on PATH
     (a shim that talks to Google with the person's sign-in) gets their account banned."""

@@ -96,6 +96,7 @@ def register(api) -> None:
         account_logout=aga.account_logout,
         is_limit_error=aga.is_limit_error,
     )
+    agy_cli.refresh_agents()  # a plugin update or reload re-reads Antigravity's models now, not in 10 minutes
     if hasattr(api, "register_panel_rpc"):  # the code box in ui/agy_login.js
         api.register_panel_rpc("agy_login_state", lambda: agy_cli.popup_state())
         api.register_panel_rpc("agy_login_submit", lambda code="": aga.popup_submit(code))
