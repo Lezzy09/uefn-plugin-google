@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 from typing import Any
 
@@ -192,6 +193,55 @@ def test_a_failed_start_tells_the_table(monkeypatch) -> None:
     assert aga.account_status("C:/acc") == {"loggedIn": True}
     monkeypatch.setattr(agy_cli, "resolve_bin", lambda override="": "")
     assert aga.account_status(None)["loggedIn"] is False
+
+
+def test_only_googles_signed_agy_runs_never_a_shim(monkeypatch, tmp_path) -> None:
+    """A Google AI plan is only allowed through Antigravity itself: a look-alike `agy` on PATH
+    (a shim that talks to Google with the person's sign-in) gets their account banned."""
+    shim, real = tmp_path / "agy.cmd", tmp_path / "agy.exe"
+    shim.write_text("@echo off")
+    real.write_bytes(b"MZ")
+    from backend.agent.coding_agents import base
+
+    monkeypatch.setattr(base, "which_cli", lambda name, override="": str(shim))
+    monkeypatch.setattr(agy_cli, "managed_bin", lambda: real)
+    monkeypatch.setattr(agy_cli, "google_signed", lambda p: p == str(real))
+    assert agy_cli.resolve_bin() == str(real)
+    monkeypatch.setattr(agy_cli, "google_signed", lambda p: False)
+    assert agy_cli.resolve_bin() == ""  # nothing Google-signed: nothing runs
+
+
+def test_google_signed_reads_the_signer_once(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    if os.name != "nt":
+        pytest.skip("Authenticode is Windows only")
+    exe = tmp_path / "agy.exe"
+    exe.write_bytes(b"MZ")
+    calls: list[str] = []
+
+    def run(argv, **kw):
+        calls.append(kw["env"]["DUCKY_AGY_PATH"])
+        return subprocess.CompletedProcess(argv, 0, "google\n" if "good" in str(exe) else "", "")
+
+    monkeypatch.setattr(agy_cli, "hidden", lambda: {})
+    agy_cli._signed.clear()
+    assert agy_cli.google_signed(str(exe), run=run) is False and agy_cli.google_signed(str(exe), run=run) is False
+    assert calls == [str(exe)]  # cached per file version
+    exe = tmp_path / "good.exe"
+    exe.write_bytes(b"MZ")
+    assert agy_cli.google_signed(str(exe), run=run) is True
+    assert agy_cli.google_signed(str(tmp_path / "missing.exe"), run=run) is False
+    agy_cli._signed.clear()
+
+
+def test_the_real_install_is_google_signed() -> None:
+    """On a PC with Ducky's Antigravity installed: Google's build passes the check."""
+    import pytest
+
+    if os.name != "nt" or not agy_cli.managed_bin().is_file():
+        pytest.skip("no Antigravity install here")
+    assert agy_cli.google_signed(str(agy_cli.managed_bin())) is True
 
 
 def test_limit_errors() -> None:

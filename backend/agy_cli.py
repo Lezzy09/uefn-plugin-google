@@ -53,13 +53,41 @@ def managed_bin() -> Path:
 
 
 def resolve_bin(override: str = "") -> str:
+    """Google's own Antigravity program, never a look-alike: a Google AI plan may only be used
+    through Antigravity itself, so a shim named ``agy`` (or a custom path) that isn't
+    Google-signed is skipped. Every launch, sign-in, sign-out and model list comes through here."""
     from backend.agent.coding_agents.base import which_cli
 
-    found = which_cli("agy", override)
-    if found:
-        return found
     own = managed_bin()
-    return str(own) if own.is_file() else ""
+    for path in (which_cli("agy", override), str(own) if own.is_file() else ""):
+        if path and google_signed(path):
+            return path
+    return ""
+
+
+_signed: dict[tuple[str, int, int], bool] = {}
+_SIGNED_PS = ("$s = Get-AuthenticodeSignature -LiteralPath $env:DUCKY_AGY_PATH; "
+              "if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -like 'CN=Google LLC,*') { 'google' }")
+
+
+def google_signed(path: str, *, run: Callable[..., Any] = subprocess.run) -> bool:
+    """Windows: a valid Authenticode signature from Google LLC (cached per file version)."""
+    if os.name != "nt":
+        return True  # ponytail: no signature check off Windows (Ducky only installs agy on Windows)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (os.path.normcase(os.path.abspath(path)), st.st_mtime_ns, st.st_size)
+    if key not in _signed:
+        try:
+            out = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _SIGNED_PS],
+                      capture_output=True, text=True, timeout=60,
+                      env={**os.environ, "DUCKY_AGY_PATH": path}, **hidden()).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False  # not cached: the next look tries again
+        _signed[key] = (out or "").strip() == "google"
+    return _signed[key]
 
 
 def platform_target() -> str:
